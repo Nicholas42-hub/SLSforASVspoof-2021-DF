@@ -7,7 +7,7 @@ This repository contains our implementation of the paper ["Audio Deepfake Detect
 ## Installation
 First, clone the repository locally, create and activate a conda environment, and install the requirements :
 ```
-$ gitclone
+$ git clone https://github.com/QiShanZhang/SLSforASVspoof-2021-DF.git
 $ cd SLSforASVspoof-2021-DF
 $ unzip fairseq-a54021305d6b3c4c5959ac9395135f63202db8f1.zip
 $ conda create -n SLS python=3.7
