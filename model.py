@@ -168,5 +168,6 @@ class Model(nn.Module):
 
         # ✅ 8. 直接输出logits（不使用LogSoftmax）
         logits = self.classifier(utt_emb)
-        return logits
+        output = self.logsoftmax(logits)
+        return output
 
