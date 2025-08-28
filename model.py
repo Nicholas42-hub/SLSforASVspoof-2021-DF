@@ -94,67 +94,49 @@ class Model(nn.Module):
         self.device = device
         self.ssl_model = SSLModel(self.device)
         self.d_model = 1024
-        self.L = 24
-        self.group_size = getattr(args, "group_size", 3)
+        self.group_size = getattr(args, "group_size", 3)  
 
-        # ✅ 1. 位置编码 - 帮助模型理解层级信息
-        self.layer_pos = nn.Parameter(torch.zeros(1, self.L, self.d_model))
-        
-        # ✅ 2. 层门控 - 自适应选择重要层
+        # ✅ 添加层门控 - 自适应选择重要的SSL层
         self.layer_gate = nn.Sequential(
-            nn.Linear(self.d_model, 128), 
-            nn.GELU(), 
-            nn.Linear(128, 1), 
-            nn.Sigmoid()
+            nn.Linear(self.d_model, 64),  # 保守的隐藏层大小
+            nn.SELU(inplace=True),        # 保持与现有架构一致
+            nn.Dropout(0.1),              # 轻度正则化
+            nn.Linear(64, 1),
+            nn.Sigmoid()                  # 输出0-1的门控权重
         )
 
-        # ✅ 3. 轻量局部卷积 - 提取局部特征
-        self.local_conv = nn.Conv1d(self.d_model, self.d_model, kernel_size=5, padding=2, groups=16)
-        
         self.temporal_attn = AttnPool(in_dim=self.d_model, attn_dim=128)
         self.intra_attn = AttnPool(in_dim=self.d_model, attn_dim=128)
         self.group_refine = ResidualRefine(in_dim=self.d_model, hidden=512, dropout=0.1)
         self.inter_attn = AttnPool(in_dim=self.d_model, attn_dim=128)
         self.utt_refine = ResidualRefine(in_dim=self.d_model, hidden=512, dropout=0.1)
 
-        # ✅ 4. 改进的分类器设计
+        # Add more regularization to prevent overfitting
         self.classifier = nn.Sequential(
             nn.LayerNorm(self.d_model),
-            nn.GELU(),
-            nn.Dropout(p=0.3),
+            nn.SELU(inplace=True),
+            nn.Dropout(p=0.2),  # Increased dropout
             nn.Linear(self.d_model, 256),
-            nn.LayerNorm(256),
-            nn.GELU(),
-            nn.Dropout(p=0.3),
+            nn.BatchNorm1d(256),  # Add batch normalization
+            nn.SELU(inplace=True),
+            nn.Dropout(p=0.2),  # Increased dropout
             nn.Linear(256, 2),
         )
+        self.logsoftmax = nn.LogSoftmax(dim=1)
 
-    def forward(self, x, pad_mask=None):
+    def forward(self, x):
         x_ssl_feat, layerResult = self.ssl_model.extract_feat(x.squeeze(-1))
-        
-        # ✅ 5. 更清晰的特征重构逻辑
-        fullf = []
-        for layer in layerResult:
-            x_l = layer[0].transpose(0,1)         # (B,T,C)
-            x_l = x_l.unsqueeze(1)                # (B,1,T,C)
-            fullf.append(x_l)
-        fullfeature = torch.cat(fullf, dim=1)     # (B,L,T,C)
+        _, fullfeature = getAttenF(layerResult)  # (B, L, T, C)
 
         B, L, T, C = fullfeature.shape
-        
-        # ✅ 6. 局部卷积 + 时序注意力（支持mask）
-        layer_tokens = fullfeature.reshape(B*L, T, C)
-        tokens = self.local_conv(layer_tokens.transpose(1,2)).transpose(1,2)
-        layer_emb, _ = self.temporal_attn(tokens, 
-                                          mask=None if pad_mask is None else pad_mask.repeat_interleave(L, dim=0))
+        layer_tokens = fullfeature.contiguous().view(B * L, T, C)
+        layer_emb, _ = self.temporal_attn(layer_tokens)
         layer_emb = layer_emb.view(B, L, C)
 
-        # ✅ 7. 层位置编码与门控
-        layer_emb = layer_emb + self.layer_pos[:, :L, :]
-        gate = self.layer_gate(layer_emb)
-        layer_emb = layer_emb * gate
+        # ✅ 应用层门控 - 对每层特征进行加权
+        gate_weights = self.layer_gate(layer_emb)  # (B, L, 1)
+        layer_emb = layer_emb * gate_weights       # 元素级乘法
 
-        # 分组处理
         groups = torch.split(layer_emb, self.group_size, dim=1)
         group_vecs = []
         for g in groups:
@@ -166,8 +148,6 @@ class Model(nn.Module):
         utt_emb, _ = self.inter_attn(group_stack)
         utt_emb = self.utt_refine(utt_emb)
 
-        # ✅ 8. 直接输出logits（不使用LogSoftmax）
         logits = self.classifier(utt_emb)
         output = self.logsoftmax(logits)
         return output
-
