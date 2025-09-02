@@ -1,6 +1,8 @@
 import argparse
 import sys
 import os
+import csv
+from datetime import datetime
 import numpy as np
 import torch
 from torch import nn
@@ -13,6 +15,40 @@ from tensorboardX import SummaryWriter
 from core_scripts.startup_config import set_random_seed
 from tqdm import tqdm
 from torchvision import transforms
+from sklearn.metrics import roc_curve
+
+def init_csv_log(log_path):
+    """Initialize CSV log file with headers"""
+    with open(log_path, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow([
+            'epoch', 'timestamp', 'train_loss', 'val_loss', 'val_acc', 'val_eer'
+        ])
+
+def log_training_metrics(log_data, model_save_path):
+    """Log training metrics to CSV file"""
+    log_path = os.path.join(model_save_path, 'training_log.csv')
+    
+    with open(log_path, 'a', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow([
+            log_data['epoch'],
+            log_data['timestamp'],
+            log_data['train_loss'],
+            log_data['val_loss'],
+            log_data['val_acc'],
+            log_data['val_eer']
+        ])
+
+def compute_eer(y_true, y_score):
+    """
+    Compute Equal Error Rate (EER)
+    """
+    fpr, tpr, thresholds = roc_curve(y_true, y_score, pos_label=1)
+    fnr = 1 - tpr
+    eer_threshold = thresholds[np.nanargmin(np.absolute((fnr - fpr)))]
+    eer = fpr[np.nanargmin(np.absolute((fnr - fpr)))]
+    return eer * 100, eer_threshold
 
 def evaluate_accuracy(dev_loader, model, device):
     val_loss = 0.0
@@ -21,6 +57,10 @@ def evaluate_accuracy(dev_loader, model, device):
     model.eval()
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
+    
+    all_labels = []
+    all_scores = []
+    
     for batch_x, batch_y in tqdm(dev_loader):
         
         batch_size = batch_x.size(0)
@@ -31,18 +71,31 @@ def evaluate_accuracy(dev_loader, model, device):
         _, batch_pred = batch_out.max(dim=1)
         num_correct += (batch_pred == batch_y).sum(dim=0).item()
 
-
-
         batch_loss = criterion(batch_out, batch_y)
         val_loss += (batch_loss.item() * batch_size)
+        
+        # Collect scores and labels for EER calculation
+        batch_scores = torch.softmax(batch_out, dim=1)[:, 1].detach().cpu().numpy()
+        all_scores.extend(batch_scores)
+        all_labels.extend(batch_y.cpu().numpy())
 
     val_loss /= num_total
     acc = 100 * (num_correct / num_total)
-    return val_loss, acc
-
+    
+    # Calculate EER
+    eer, eer_threshold = compute_eer(all_labels, all_scores)
+    
+    return val_loss, acc, eer
 
 def produce_evaluation_file(dataset, model, device, save_path):
-    data_loader = DataLoader(dataset, batch_size=8, shuffle=False, drop_last=False)
+    data_loader = DataLoader(
+        dataset, 
+        batch_size=16,  # Increase from default (probably 1)
+        shuffle=False, 
+        drop_last=False, 
+        pin_memory=True,  # Faster GPU transfer
+        num_workers=8     # Parallel data loading
+    )
     num_correct = 0.0
     num_total = 0.0
     model.eval()
@@ -105,7 +158,7 @@ def train_epoch(train_loader, model, lr,optim, device):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='ASVspoof2021 baseline system')
     # Dataset
-    parser.add_argument('--database_path', type=str, default='/path/to/your/database/', help='Change this to user\'s full directory address of LA database (ASVspoof2019- for training & development (used as validation), ASVspoof2021 DF for evaluation scores). We assume that all three ASVspoof 2019 LA train, LA dev and ASVspoof2021 DF eval data folders are in the same database_path directory.')
+    parser.add_argument('--database_path', type=str, default='/root/autodl-tmp/CLAD/Datasets/LA/', help='Change this to user\'s full directory address of LA database (ASVspoof2019- for training & development (used as validation), ASVspoof2021 DF for evaluation scores). We assume that all three ASVspoof 2019 LA train, LA dev and ASVspoof2021 DF eval data folders are in the same database_path directory.')
     '''
     % database_path/
     %   |- DF
@@ -114,7 +167,7 @@ if __name__ == '__main__':
     %      |- ASVspoof2019_LA_dev/flac
     '''
 
-    parser.add_argument('--protocols_path', type=str, default='/path/to/your/database/', help='Change with path to user\'s DF database protocols directory address')
+    parser.add_argument('--protocols_path', type=str, default='/root/autodl-tmp/CLAD/Datasets/LA/', help='Change with path to user\'s DF database protocols directory address')
     '''
     % protocols_path/
     %   |- ASVspoof_LA_cm_protocols
@@ -140,7 +193,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_path', type=str,
                         default=None, help='Model checkpoint')
     parser.add_argument('--comment', type=str, default=None,
-                        help='Comment to describe the saved model')
+                        help='Comment to describe the saved model and experiment')
     # Auxiliary arguments
     parser.add_argument('--track', type=str, default='DF',choices=['LA', 'In-the-Wild','DF'], help='LA/PA/DF')
     parser.add_argument('--eval_output', type=str, default=None,
@@ -175,7 +228,7 @@ if __name__ == '__main__':
     parser.add_argument('--minBW', type=int, default=100, 
                     help='minimum width [Hz] of filter.[default=100] ')
     parser.add_argument('--maxBW', type=int, default=1000, 
-                    help='maximum width [Hz] of filter.[default=1000] ')
+                    help='maximum width [Hz] of filter.[default=1000]')
     parser.add_argument('--minCoeff', type=int, default=10, 
                     help='minimum filter coefficients. More the filter coefficients more ideal the filter slope.[default=10]')
     parser.add_argument('--maxCoeff', type=int, default=100, 
@@ -226,6 +279,9 @@ if __name__ == '__main__':
     if not os.path.exists(model_save_path):
         os.mkdir(model_save_path)
     
+    # Initialize CSV log
+    init_csv_log(os.path.join(model_save_path, 'training_log.csv'))
+    
     #GPU device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'                  
     print('Device: {}'.format(device))
@@ -259,11 +315,8 @@ if __name__ == '__main__':
         produce_evaluation_file(eval_set, model, device, args.eval_output)
         sys.exit(0)
    
-    
-
-     
     # define train dataloader
-    d_label_trn,file_train = genSpoof_list( dir_meta =  os.path.join(args.protocols_path+'ASVspoof_DF_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt'),is_train=True,is_eval=False)
+    d_label_trn,file_train = genSpoof_list( dir_meta =  os.path.join(args.protocols_path+'ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt'),is_train=True,is_eval=False)
     
     print('no. of training trials',len(file_train))
     
@@ -273,50 +326,76 @@ if __name__ == '__main__':
     
     del train_set,d_label_trn
     
-
     # #define dev (validation) dataloader
-    #
-    # d_label_dev,file_dev = genSpoof_list( dir_meta =  os.path.join(args.protocols_path+'ASVspoof_LA_cm_protocols/ASVspoof2019.LA.cm.dev.trl.txt'),is_train=False,is_eval=False)
-    #
-    # print('no. of validation trials',len(file_dev))
-    #
-    # dev_set = Dataset_ASVspoof2019_train(args,list_IDs = file_dev,labels = d_label_dev,base_dir = os.path.join(args.database_path+'ASVspoof2019_LA_dev/'),algo=args.algo)
-    #
-    # dev_loader = DataLoader(dev_set, batch_size=args.batch_size,num_workers=8, shuffle=False)
-    #
-    # del dev_set,d_label_dev
-
+    d_label_dev,file_dev = genSpoof_list( dir_meta =  os.path.join(args.protocols_path+'ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.dev.trl.txt'),is_train=False,is_eval=False)
     
+    print('no. of validation trials',len(file_dev))
     
+    dev_set = Dataset_ASVspoof2019_train(args,list_IDs = file_dev,labels = d_label_dev,base_dir = os.path.join(args.database_path+'ASVspoof2019_LA_dev/'),algo=args.algo)
+    
+    dev_loader = DataLoader(dev_set, batch_size=args.batch_size,num_workers=8, shuffle=False)
+    
+    del dev_set,d_label_dev
 
     # Training and validation 
     num_epochs = args.num_epochs
     writer = SummaryWriter('logs/{}'.format(model_tag))
 
     best_val_loss = float('inf')
+    best_eer = float('inf')
     patience_counter = 0
 
     for epoch in range(num_epochs):
+        print('\nEpoch: {}'.format(epoch))
         
         running_loss = train_epoch(train_loader,model, args.lr,optimizer, device)
-        #val_loss, val_acc = evaluate_accuracy(dev_loader, model, device)
+        
+        if epoch>=0:
+            val_loss, val_acc, val_eer = evaluate_accuracy(dev_loader, model, device)
 
-        if running_loss < best_val_loss:
-            best_val_loss = running_loss
-            patience_counter = 0
+            # Log to CSV
+            log_data = {
+                'epoch': epoch,
+                'timestamp': datetime.now().strftime('%d/%m/%Y %H:%M'),
+                'train_loss': running_loss,
+                'val_loss': val_loss,
+                'val_acc': val_acc,
+                'val_eer': val_eer
+            }
+            log_training_metrics(log_data, model_save_path)
 
-        else:
-            patience_counter += 1
+            if val_eer < best_eer:
+                best_eer = val_eer
+                best_val_loss = val_loss
+                patience_counter = 0
+                # Save best model based on EER
+                if args.comment:
+                    best_model_filename = f'best_model_eer_{args.comment}.pth'
+                else:
+                    best_model_filename = 'best_model_eer.pth'
+                torch.save(model.state_dict(), os.path.join(model_save_path, best_model_filename))
+                print(f'New best model saved with EER: {best_eer:.6f}')
+            else:
+                patience_counter += 1
 
+            writer.add_scalar('val_loss', val_loss, epoch)
+            writer.add_scalar('val_acc', val_acc, epoch)
+            writer.add_scalar('val_eer', val_eer, epoch)
+            writer.add_scalar('loss', running_loss, epoch)
+            
+            print('Train Loss: {:.6f} - Val Loss: {:.6f} - Val Acc: {:.2f}% - Val EER: {:.6f}'.format(
+                running_loss, val_loss, val_acc, val_eer))
+            
+            # Save epoch model with comment
+            if args.comment:
+                epoch_model_filename = f'epoch_{epoch}_{args.comment}.pth'
+            else:
+                epoch_model_filename = f'epoch_{epoch}.pth'
+            torch.save(model.state_dict(), os.path.join(model_save_path, epoch_model_filename))
 
-        #writer.add_scalar('val_loss',0, epoch)
-        #writer.add_scalar('val_acc', 0, epoch)
-        writer.add_scalar('loss', running_loss, epoch)
-        print('\n{} - {} - {} -{}'.format(epoch,
-                                                   running_loss,0,0))
-        torch.save(model.state_dict(), os.path.join(
-            model_save_path, 'epoch_{}.pth'.format(epoch)))
-
-        if patience_counter >= 1:
-            print("Early stopping triggered, best model is epoch: ", epoch-1)
-            break
+            # if patience_counter >= 3:  # Increased patience for better training
+            #     print("Early stopping triggered, best EER: {:.2f}% at epoch: {}".format(best_eer*100, epoch - patience_counter))
+            #     break
+    
+    print("Training completed. Best EER: {:.6f}".format(best_eer))
+    writer.close()

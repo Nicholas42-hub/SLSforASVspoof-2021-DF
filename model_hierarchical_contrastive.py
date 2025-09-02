@@ -1,7 +1,6 @@
 import random
 import sys
 from typing import Union
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -21,13 +20,11 @@ class SSLModel(nn.Module):
         return
 
     def extract_feat(self, input_data):
-
         if next(self.model.parameters()).device != input_data.device \
            or next(self.model.parameters()).dtype != input_data.dtype:
             self.model.to(input_data.device, dtype=input_data.dtype)
             self.model.train()
 
-        
         if input_data.ndim == 3:
             input_tmp = input_data[:, :, 0]
         else:
@@ -42,7 +39,6 @@ def getAttenF(layerResult):
     poollayerResult = []
     fullf = []
     for layer in layerResult:
-
         layery = layer[0].transpose(0, 1).transpose(1, 2) #(x,z)  x(201,b,1024) (b,201,1024) (b,1024,201)
         layery = F.adaptive_avg_pool1d(layery, 1) #(b,1024,1)
         layery = layery.transpose(1, 2) # (b,1,1024)
@@ -55,7 +51,6 @@ def getAttenF(layerResult):
     layery = torch.cat(poollayerResult, dim=1)
     fullfeature = torch.cat(fullf, dim=1)
     return layery, fullfeature
-
 
 class AttnPool(nn.Module):
     def __init__(self, in_dim: int, attn_dim: int = 128):
@@ -88,76 +83,106 @@ class ResidualRefine(nn.Module):
     def forward(self, x: torch.Tensor):
         return x + self.net(x)
 
-class ContrastiveLoss(nn.Module):
+class BalancedContrastiveLoss(nn.Module):
     """
-    Supervised Contrastive Loss for binary classification
+    平衡的对比学习损失 - 自动调整尺度
     """
-    def __init__(self, temperature=0.1):
-        super(ContrastiveLoss, self).__init__()
+    def __init__(self, temperature=0.07):
+        super(BalancedContrastiveLoss, self).__init__()
         self.temperature = temperature
         
     def forward(self, features, labels):
-        """
-        Args:
-            features: [batch_size, feature_dim] - L2 normalized features
-            labels: [batch_size] - binary labels (0 or 1)
-        """
         batch_size = features.size(0)
         
-        # Normalize features
+        if batch_size < 2:
+            return torch.tensor(0.0, device=features.device)
+        
+        # L2归一化
         features = F.normalize(features, dim=1)
         
-        # Compute similarity matrix
+        # 计算相似度矩阵
         similarity_matrix = torch.matmul(features, features.T) / self.temperature
         
-        # Create positive mask (same class)
+        # 创建正样本mask
         labels = labels.view(-1, 1)
         mask = torch.eq(labels, labels.T).float().to(features.device)
-        
-        # Remove diagonal elements
         mask = mask - torch.eye(batch_size).to(features.device)
         
-        # For numerical stability
+        # 检查正样本对
+        positive_pairs = mask.sum(dim=1)
+        if positive_pairs.sum() == 0:
+            return torch.tensor(0.0, device=features.device)
+        
+        # 数值稳定性
         logits_max, _ = torch.max(similarity_matrix, dim=1, keepdim=True)
         logits = similarity_matrix - logits_max.detach()
         
-        # Compute log probabilities
+        # 计算对比损失
         exp_logits = torch.exp(logits)
         log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-8)
         
-        # Compute mean of positive pairs
-        mean_log_prob_pos = (mask * log_prob).sum(dim=1) / (mask.sum(dim=1) + 1e-8)
+        # 只对有正样本的样本计算损失
+        valid_mask = positive_pairs > 0
+        if valid_mask.sum() == 0:
+            return torch.tensor(0.0, device=features.device)
+            
+        mean_log_prob_pos = (mask * log_prob).sum(dim=1) / (positive_pairs + 1e-8)
+        mean_log_prob_pos = mean_log_prob_pos[valid_mask]
         
-        # Loss
         loss = -mean_log_prob_pos.mean()
+        
+        # 将损失缩放到与CCE相似的范围 (0-1)
+        loss = torch.clamp(loss, 0, 10) / 10
         
         return loss
 
-class CombinedLoss(nn.Module):
+class AdaptiveCombinedLoss(nn.Module):
     """
-    Combined Cross-Entropy and Contrastive Loss
+    自适应组合损失 - 动态平衡两个损失
     """
-    def __init__(self, weight=None, temperature=0.1, contrastive_weight=0.1):
-        super(CombinedLoss, self).__init__()
+    def __init__(self, weight=None, temperature=0.07, contrastive_weight=0.1):
+        super(AdaptiveCombinedLoss, self).__init__()
         self.cce_loss = nn.CrossEntropyLoss(weight=weight)
-        self.contrastive_loss = ContrastiveLoss(temperature=temperature)
-        self.contrastive_weight = contrastive_weight
+        self.contrastive_loss = BalancedContrastiveLoss(temperature=temperature)
+        self.initial_contrastive_weight = contrastive_weight
+        self.step_count = 0
+        self.cce_history = []
+        self.contrastive_history = []
         
     def forward(self, logits, features, labels):
-        """
-        Args:
-            logits: [batch_size, num_classes] - classification logits
-            features: [batch_size, feature_dim] - features for contrastive learning
-            labels: [batch_size] - ground truth labels
-        """
-        # Cross-entropy loss
+        # 计算两个损失
         cce = self.cce_loss(logits, labels)
-        
-        # Contrastive loss
         contrastive = self.contrastive_loss(features, labels)
         
-        # Combined loss
-        total_loss = cce + self.contrastive_weight * contrastive
+        # 记录历史
+        self.cce_history.append(cce.item())
+        self.contrastive_history.append(contrastive.item())
+        
+        # 保持最近20步的历史
+        if len(self.cce_history) > 20:
+            self.cce_history.pop(0)
+            self.contrastive_history.pop(0)
+        
+        # 动态调整权重
+        if len(self.cce_history) > 5:
+            avg_cce = sum(self.cce_history[-5:]) / 5
+            avg_contrastive = sum(self.contrastive_history[-5:]) / 5
+            
+            # 根据损失比例调整权重
+            if avg_contrastive > 0:
+                ratio = avg_cce / avg_contrastive
+                # 目标是让两个损失贡献相当
+                adaptive_weight = self.initial_contrastive_weight * ratio * 2
+                adaptive_weight = torch.clamp(torch.tensor(adaptive_weight), 0.01, 1.0).item()
+            else:
+                adaptive_weight = self.initial_contrastive_weight
+        else:
+            adaptive_weight = self.initial_contrastive_weight
+        
+        # 组合损失
+        total_loss = cce + adaptive_weight * contrastive
+        
+        self.step_count += 1
         
         return total_loss, cce, contrastive
 
@@ -169,32 +194,27 @@ class ModelHierarchicalContrastive(nn.Module):
         self.d_model = 1024
         self.group_size = getattr(args, "group_size", 3)  
 
+        # 层次注意力模块
         self.temporal_attn = AttnPool(in_dim=self.d_model, attn_dim=128)
         self.intra_attn = AttnPool(in_dim=self.d_model, attn_dim=128)
         self.group_refine = ResidualRefine(in_dim=self.d_model, hidden=512, dropout=0.1)
         self.inter_attn = AttnPool(in_dim=self.d_model, attn_dim=128)
         self.utt_refine = ResidualRefine(in_dim=self.d_model, hidden=512, dropout=0.1)
 
-        # Add projection head for contrastive learning
+        # 对比学习投影头 - 简化版本
         self.projection_head = nn.Sequential(
-            nn.Linear(self.d_model, 512),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(512, 256),
+            nn.Linear(self.d_model, 256),
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(256, 128)
         )
 
-        # Add more regularization to prevent overfitting
+        # 分类器
         self.classifier = nn.Sequential(
-            nn.LayerNorm(self.d_model),
-            nn.SELU(inplace=True),
-            nn.Dropout(p=0.2),  # Increased dropout
+            nn.Dropout(p=0.1),
             nn.Linear(self.d_model, 256),
-            nn.BatchNorm1d(256),  # Add batch normalization
             nn.SELU(inplace=True),
-            nn.Dropout(p=0.2),  # Increased dropout
+            nn.Dropout(p=0.1),
             nn.Linear(256, 2),
         )
         self.logsoftmax = nn.LogSoftmax(dim=1)
@@ -208,6 +228,11 @@ class ModelHierarchicalContrastive(nn.Module):
         layer_emb, _ = self.temporal_attn(layer_tokens)
         layer_emb = layer_emb.view(B, L, C)
 
+        # 处理分组
+        if layer_emb.size(1) % self.group_size != 0:
+            pad_size = self.group_size - (layer_emb.size(1) % self.group_size)
+            layer_emb = F.pad(layer_emb, (0, 0, 0, pad_size), mode='constant', value=0)
+
         groups = torch.split(layer_emb, self.group_size, dim=1)
         group_vecs = []
         for g in groups:
@@ -219,13 +244,16 @@ class ModelHierarchicalContrastive(nn.Module):
         utt_emb, _ = self.inter_attn(group_stack)
         utt_emb = self.utt_refine(utt_emb)
 
-        # Classification output
+        # 分类输出
         logits = self.classifier(utt_emb)
         output = self.logsoftmax(logits)
         
         if return_features:
-            # Project features for contrastive learning
+            # 投影特征用于对比学习
             projected_features = self.projection_head(utt_emb)
             return output, projected_features
         
         return output
+
+# 为了兼容，保持原来的类名
+CombinedLoss = AdaptiveCombinedLoss

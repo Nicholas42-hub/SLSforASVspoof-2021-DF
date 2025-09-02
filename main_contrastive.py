@@ -414,3 +414,4 @@ if __name__ == '__main__':
     print('Training completed!')
 
 
+CUDA_VISIBLE_DEVICES=0 python main_hierarchical_contrastive.py   --track=LA   --is_eval   --eval   --model_path=/root/autodl-tmp/SLSforASVspoof-2021-DF/models/Ablation/best_model_eer_hierarchical_contrastive.pth   --protocols_path=/root/autodl-tmp/CLAD/Datasets/ASVspoof2021_LA_eval/ASVspoof2021.LA.cm.eval.trl.txt   --database_path=/root/autodl-tmp/CLAD/Datasets/ASVspoof2021_LA_eval/   --eval_output=/root/autodl-tmp/SLSforASVspoof-2021-DF/main_hierarchical_contrastive.txt
