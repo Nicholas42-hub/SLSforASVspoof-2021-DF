@@ -9,6 +9,86 @@ import torch.nn.functional as F
 from torch import Tensor
 import fairseq
 
+class SupConLoss(nn.Module):
+    """Supervised Contrastive Learning Loss with temperature scaling and InfoNCE"""
+    def __init__(self, temperature=0.3, contrast_mode='all', base_temperature=0.07):
+        super(SupConLoss, self).__init__()
+        self.temperature = temperature
+        self.contrast_mode = contrast_mode
+        self.base_temperature = base_temperature
+
+    def forward(self, features, labels=None, mask=None):
+        """
+        Args:
+            features: hidden vector of shape [bsz, n_views, f_dim] or [bsz, f_dim]
+            labels: ground truth of shape [bsz]
+            mask: contrastive mask of shape [bsz, bsz], mask_{i,j}=1 if sample j
+                has the same class as sample i. Can be asymmetric.
+        Returns:
+            A loss scalar.
+        """
+        device = features.device
+
+        if len(features.shape) < 3:
+            features = features.unsqueeze(1)
+
+        batch_size = features.shape[0]
+        if labels is not None and mask is not None:
+            raise ValueError('Cannot define both `labels` and `mask`')
+        elif labels is None and mask is None:
+            mask = torch.eye(batch_size, dtype=torch.float32).to(device)
+        elif labels is not None:
+            labels = labels.contiguous().view(-1, 1)
+            if labels.shape[0] != batch_size:
+                raise ValueError('Num of labels does not match num of features')
+            mask = torch.eq(labels, labels.T).float().to(device)
+        else:
+            mask = mask.float().to(device)
+
+        contrast_count = features.shape[1]
+        contrast_feature = torch.cat(torch.unbind(features, dim=1), dim=0)
+        if self.contrast_mode == 'one':
+            anchor_feature = features[:, 0]
+            anchor_count = 1
+        elif self.contrast_mode == 'all':
+            anchor_feature = contrast_feature
+            anchor_count = contrast_count
+        else:
+            raise ValueError('Unknown mode: {}'.format(self.contrast_mode))
+
+        # compute logits
+        anchor_dot_contrast = torch.div(
+            torch.matmul(anchor_feature, contrast_feature.T),
+            self.temperature)
+        
+        # for numerical stability
+        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+        logits = anchor_dot_contrast - logits_max.detach()
+
+        # tile mask
+        mask = mask.repeat(anchor_count, contrast_count)
+        # mask-out self-contrast cases
+        logits_mask = torch.scatter(
+            torch.ones_like(mask),
+            1,
+            torch.arange(batch_size * anchor_count).view(-1, 1).to(device),
+            0
+        )
+        mask = mask * logits_mask
+
+        # compute log_prob
+        exp_logits = torch.exp(logits) * logits_mask
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-8)
+
+        # compute mean of log-likelihood over positive
+        mean_log_prob_pos = (mask * log_prob).sum(1) / (mask.sum(1) + 1e-8)
+
+        # loss
+        loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
+        loss = loss.view(anchor_count, batch_size).mean()
+
+        return loss
+
 class SSLModel(nn.Module):
     def __init__(self,device):
         super(SSLModel, self).__init__()
@@ -102,6 +182,19 @@ class Model(nn.Module):
         self.inter_attn = AttnPool(in_dim=self.d_model, attn_dim=128)
         self.utt_refine = ResidualRefine(in_dim=self.d_model, hidden=512, dropout=0.1)
 
+        # Add projection head for contrastive learning
+        self.projection_head = nn.Sequential(
+            nn.Linear(self.d_model, 512),
+            nn.BatchNorm1d(512),  # Add batch normalization
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.1),      # Add dropout
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),  # Add batch normalization
+            nn.ReLU(inplace=True),
+            L2Norm(dim=1)         # L2 normalization for better contrastive learning
+        )
+
+
         # Add more regularization to prevent overfitting
         self.classifier = nn.Sequential(
             nn.LayerNorm(self.d_model),
@@ -114,8 +207,11 @@ class Model(nn.Module):
             nn.Linear(256, 2),
         )
         self.logsoftmax = nn.LogSoftmax(dim=1)
+        
+        # Initialize contrastive loss
+        self.contrastive_loss = SupConLoss(temperature=0.3)
 
-    def forward(self, x):
+    def forward(self, x, labels=None, return_contrastive=False):
         x_ssl_feat, layerResult = self.ssl_model.extract_feat(x.squeeze(-1))
         _, fullfeature = getAttenF(layerResult)  # (B, L, T, C)
 
@@ -135,7 +231,30 @@ class Model(nn.Module):
         utt_emb, _ = self.inter_attn(group_stack)
         utt_emb = self.utt_refine(utt_emb)
 
+        # Classification logits
         logits = self.classifier(utt_emb)
         output = self.logsoftmax(logits)
+        
+        if return_contrastive and labels is not None:
+            # Compute contrastive features
+            contrastive_features = self.projection_head(utt_emb)
+            
+            # Compute contrastive loss with temperature scaling and normalization
+            contrastive_loss = self.contrastive_loss(contrastive_features.unsqueeze(1), labels)
+            normalized_contrastive = contrastive_loss / B  # Normalize by batch size
+            
+            return output, normalized_contrastive
+        
         return output
 
+# Add L2Norm layer for projection head
+class L2Norm(nn.Module):
+    def __init__(self, dim=1):
+        super(L2Norm, self).__init__()
+        self.dim = dim
+
+    def forward(self, x):
+        return F.normalize(x, p=2, dim=self.dim)
+
+# Register the L2Norm module
+nn.L2Norm = L2Norm

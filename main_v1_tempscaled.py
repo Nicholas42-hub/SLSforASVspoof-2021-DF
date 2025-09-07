@@ -10,7 +10,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 import yaml
 from data_utils_SSL import genSpoof_list,Dataset_ASVspoof2019_train,Dataset_ASVspoof2021_eval,Dataset_in_the_wild_eval
-from model import Model
+from model_hierarchical_contrastive import Model  # Updated import
 from tensorboardX import SummaryWriter
 from core_scripts.startup_config import set_random_seed
 from tqdm import tqdm
@@ -22,7 +22,8 @@ def init_csv_log(log_path):
     with open(log_path, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow([
-            'epoch', 'timestamp', 'train_loss', 'val_loss', 'val_acc', 'val_eer'
+            'epoch', 'timestamp', 'train_loss', 'contrastive_loss', 'total_loss', 
+            'val_loss', 'val_acc', 'val_eer'
         ])
 
 def log_training_metrics(log_data, model_save_path):
@@ -35,6 +36,8 @@ def log_training_metrics(log_data, model_save_path):
             log_data['epoch'],
             log_data['timestamp'],
             log_data['train_loss'],
+            log_data['contrastive_loss'],
+            log_data['total_loss'],
             log_data['val_loss'],
             log_data['val_acc'],
             log_data['val_eer']
@@ -123,8 +126,10 @@ def produce_evaluation_file(dataset, model, device, save_path):
         fh.close()   
     print('Scores saved to {}'.format(save_path))
 
-def train_epoch(train_loader, model, lr,optim, device):
+def train_epoch(train_loader, model, lr, optim, device, contrastive_weight=0.1):
     running_loss = 0
+    running_contrastive_loss = 0
+    running_total_loss = 0
     
     num_total = 0.0
     
@@ -141,22 +146,32 @@ def train_epoch(train_loader, model, lr,optim, device):
         
         batch_x = batch_x.to(device)
         batch_y = batch_y.view(-1).type(torch.int64).to(device)
-        batch_out = model(batch_x)
         
-        batch_loss = criterion(batch_out, batch_y)
+        # Forward pass with contrastive learning
+        batch_out, contrastive_loss = model(batch_x, labels=batch_y, return_contrastive=True)
         
-        running_loss += (batch_loss.item() * batch_size)
+        # Classification loss
+        classification_loss = criterion(batch_out, batch_y)
+        
+        # Total loss with contrastive component
+        total_loss = classification_loss + contrastive_weight * contrastive_loss
+        
+        running_loss += (classification_loss.item() * batch_size)
+        running_contrastive_loss += (contrastive_loss.item() * batch_size)
+        running_total_loss += (total_loss.item() * batch_size)
        
         optimizer.zero_grad()
-        batch_loss.backward()
+        total_loss.backward()
         optimizer.step()
        
     running_loss /= num_total
+    running_contrastive_loss /= num_total
+    running_total_loss /= num_total
 
-    return running_loss
+    return running_loss, running_contrastive_loss, running_total_loss
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='ASVspoof2021 baseline system')
+    parser = argparse.ArgumentParser(description='ASVspoof2021 baseline system with hierarchical contrastive learning')
     # Dataset
     parser.add_argument('--database_path', type=str, default='/root/autodl-tmp/CLAD/Datasets/LA/', help='Change this to user\'s full directory address of LA database (ASVspoof2019- for training & development (used as validation), ASVspoof2021 DF for evaluation scores). We assume that all three ASVspoof 2019 LA train, LA dev and ASVspoof2021 DF eval data folders are in the same database_path directory.')
     '''
@@ -186,6 +201,15 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=0.000001)
     parser.add_argument('--weight_decay', type=float, default=0.0001)
     parser.add_argument('--loss', type=str, default='weighted_CCE')
+    
+    # Contrastive learning parameters
+    parser.add_argument('--contrastive_weight', type=float, default=0.1, 
+                        help='Weight for contrastive loss component')
+    parser.add_argument('--contrastive_temperature', type=float, default=0.3,
+                        help='Temperature for contrastive loss')
+    parser.add_argument('--group_size', type=int, default=3,
+                        help='Group size for hierarchical attention')
+    
     # model
     parser.add_argument('--seed', type=int, default=1234,
                         help='random seed (default: 1234)')
@@ -269,8 +293,9 @@ if __name__ == '__main__':
     track = args.track
 
     #define model saving path
-    model_tag = 'model_{}_{}_{}_{}_{}'.format(
-        track, args.loss, args.num_epochs, args.batch_size, args.lr)
+    model_tag = 'model_hierarchical_contrastive_{}_{}_{}_{}_{}_cw{}_temp{}'.format(
+        track, args.loss, args.num_epochs, args.batch_size, args.lr, 
+        args.contrastive_weight, args.contrastive_temperature)
     if args.comment:
         model_tag = model_tag + '_{}'.format(args.comment)
     model_save_path = os.path.join('models', model_tag)
@@ -286,17 +311,17 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'                  
     print('Device: {}'.format(device))
     
-    model = Model(args,device)
+    model = Model(args, device)
     nb_params = sum([param.view(-1).size()[0] for param in model.parameters()])
 
-    model =nn.DataParallel(model).to(device)
-    print('nb_params:',nb_params)
+    model = nn.DataParallel(model).to(device)
+    print('nb_params:', nb_params)
 
     #set Adam optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,weight_decay=args.weight_decay)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     
     if args.model_path:
-        model.load_state_dict(torch.load(args.model_path,map_location=device))
+        model.load_state_dict(torch.load(args.model_path, map_location=device))
         print('Model loaded : {}'.format(args.model_path))
 
     # evaluation mode on the In-the-Wild dataset.
@@ -348,9 +373,10 @@ if __name__ == '__main__':
     for epoch in range(num_epochs):
         print('\nEpoch: {}'.format(epoch))
         
-        running_loss = train_epoch(train_loader,model, args.lr,optimizer, device)
+        running_loss, running_contrastive_loss, running_total_loss = train_epoch(
+            train_loader, model, args.lr, optimizer, device, args.contrastive_weight)
         
-        if epoch>=0:
+        if epoch >= 0:
             val_loss, val_acc, val_eer = evaluate_accuracy(dev_loader, model, device)
 
             # Log to CSV
@@ -358,6 +384,8 @@ if __name__ == '__main__':
                 'epoch': epoch,
                 'timestamp': datetime.now().strftime('%d/%m/%Y %H:%M'),
                 'train_loss': running_loss,
+                'contrastive_loss': running_contrastive_loss,
+                'total_loss': running_total_loss,
                 'val_loss': val_loss,
                 'val_acc': val_acc,
                 'val_eer': val_eer
@@ -381,10 +409,12 @@ if __name__ == '__main__':
             writer.add_scalar('val_loss', val_loss, epoch)
             writer.add_scalar('val_acc', val_acc, epoch)
             writer.add_scalar('val_eer', val_eer, epoch)
-            writer.add_scalar('loss', running_loss, epoch)
+            writer.add_scalar('train_loss', running_loss, epoch)
+            writer.add_scalar('contrastive_loss', running_contrastive_loss, epoch)
+            writer.add_scalar('total_loss', running_total_loss, epoch)
             
-            print('Train Loss: {:.6f} - Val Loss: {:.6f} - Val Acc: {:.2f}% - Val EER: {:.6f}'.format(
-                running_loss, val_loss, val_acc, val_eer))
+            print('Train Loss: {:.6f} - Contrastive Loss: {:.6f} - Total Loss: {:.6f} - Val Loss: {:.6f} - Val Acc: {:.2f}% - Val EER: {:.6f}'.format(
+                running_loss, running_contrastive_loss, running_total_loss, val_loss, val_acc, val_eer))
             
             # Save epoch model with comment
             if args.comment:
@@ -399,17 +429,3 @@ if __name__ == '__main__':
     
     print("Training completed. Best EER: {:.6f}".format(best_eer))
     writer.close()
-
-
-
-    # CUDA_VISIBLE_DEVICES=0 python main_v1_tempscaled.py \
-    # --track=In-the-Wild \
-    # --is_eval \
-    # --eval \
-    # --model_path=/root/autodl-tmp/SLSforASVspoof-2021-DF/models/Ablation/epoch_13_supervisor_temp_scaled.pth \
-    # --protocols_path=/root/autodl-tmp/CLAD/Datasets/release_in_the_wild/filenames.txt \
-    # --database_path=/root/autodl-tmp/CLAD/Datasets/release_in_the_wild/ \
-    # --eval_output=/root/autodl-tmp/SLSforASVspoof-2021-DF/scores_epoch_13_supervisor_temp_scaled_in_the_wild.txt
-
-
-    # python evaluate_in_the_wild.py scores_epoch_13_supervisor_temp_scaled_in_the_wild.txt ./keys eval
