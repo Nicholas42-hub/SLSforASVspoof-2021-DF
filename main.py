@@ -413,3 +413,17 @@ if __name__ == '__main__':
 
 
     # python evaluate_in_the_wild.py scores_epoch_13_supervisor_temp_scaled_in_the_wild.txt ./keys eval
+
+
+    #     CUDA_VISIBLE_DEVICES=0 python main_v1_tempscaled.py \
+    # --track=In-the-Wild \
+    # --is_eval \
+    # --eval \
+    # --model_path=/root/autodl-tmp/SLSforASVspoof-2021-DF/models/Ablation/best_model_eer_supervisor_temp_dynamic_lambda_tempscaledv1.pth \
+    # --protocols_path=/root/autodl-tmp/CLAD/Datasets/release_in_the_wild/filenames.txt \
+    # --database_path=/root/autodl-tmp/CLAD/Datasets/release_in_the_wild/ \
+    # --eval_output=/root/autodl-tmp/SLSforASVspoof-2021-DF/scores_best_model_eer_supervisor_temp_dynamic_lambda_tempscaledv1_in_the_wild.txt
+
+
+    python evaluate_in_the_wild.py scores_best_model_eer_supervisor_temp_dynamic_lambda_tempscaledv1_in_the_wild.txt ./keys eval
+ß
