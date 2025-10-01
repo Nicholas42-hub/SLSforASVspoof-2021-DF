@@ -8,6 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 import fairseq
+# 添加mamba导入
+from mamba_ssm import Mamba
 
 class SSLModel(nn.Module):
     def __init__(self,device):
@@ -108,7 +110,23 @@ class Model(nn.Module):
         self.temporal_attn = AttnPool(in_dim=self.d_model, attn_dim=128)
         self.intra_attn = AttnPool(in_dim=self.d_model, attn_dim=128)
         self.group_refine = ResidualRefine(in_dim=self.d_model, hidden=512, dropout=0.1)
-        self.inter_attn = AttnPool(in_dim=self.d_model, attn_dim=128)
+        
+        # ✅ 替换inter_attn为Mamba
+        self.mamba_block = Mamba(
+            d_model=self.d_model,      # Model dimension
+            d_state=16,                # SSM state expansion factor
+            d_conv=4,                  # Local convolution width  
+            expand=2,                  # Block expansion factor
+        )
+        
+        # 添加一个线性层来聚合序列
+        self.sequence_aggregator = nn.Sequential(
+            nn.LayerNorm(self.d_model),
+            nn.Linear(self.d_model, self.d_model),
+            nn.SELU(inplace=True),
+            nn.AdaptiveAvgPool1d(1)  # 将序列维度聚合为1
+        )
+        
         self.utt_refine = ResidualRefine(in_dim=self.d_model, hidden=512, dropout=0.1)
 
         # Add more regularization to prevent overfitting
@@ -144,8 +162,16 @@ class Model(nn.Module):
             g_vec = self.group_refine(g_vec)
             group_vecs.append(g_vec)
 
-        group_stack = torch.stack(group_vecs, dim=1)
-        utt_emb, _ = self.inter_attn(group_stack)
+        group_stack = torch.stack(group_vecs, dim=1)  # (B, num_groups, C)
+        
+        # ✅ 使用Mamba替代inter_attn处理组间关系
+        # Mamba期望输入形状为(B, L, D)，这里group_stack已经是正确的形状
+        mamba_out = self.mamba_block(group_stack)  # (B, num_groups, C)
+        
+        # 聚合序列维度得到utterance级别的embedding
+        mamba_out_transposed = mamba_out.transpose(1, 2)  # (B, C, num_groups)
+        utt_emb = self.sequence_aggregator(mamba_out_transposed).squeeze(-1)  # (B, C)
+        
         utt_emb = self.utt_refine(utt_emb)
 
         logits = self.classifier(utt_emb)
