@@ -10,7 +10,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 import yaml
 from data_utils_SSL import genSpoof_list,Dataset_ASVspoof2019_train,Dataset_ASVspoof2021_eval,Dataset_in_the_wild_eval
-from model import Model
+from model_hiercon import Model
 from tensorboardX import SummaryWriter
 from core_scripts.startup_config import set_random_seed
 from tqdm import tqdm
