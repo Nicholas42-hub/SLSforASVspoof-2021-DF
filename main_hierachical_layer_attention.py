@@ -9,10 +9,13 @@ from torch import nn
 from torch import Tensor
 from torch.utils.data import DataLoader
 import yaml
-from data_utils_SSL import genSpoof_list,Dataset_ASVspoof2019_train,Dataset_ASVspoof2021_eval,Dataset_in_the_wild_eval
-# 修改1: 支持多个模型导入
+from data_utils_SSL import genSpoof_list, Dataset_ASVspoof2019_train, Dataset_ASVspoof2021_eval, Dataset_in_the_wild_eval
+
+# 修改1: 导入所有模型
 from model_pyramid_grouping import Model as PyramidModel
 from model_fusion_best import FusionBestModel
+from model_hierachical_layer_attention import HierarchicalLayerModel
+
 from tensorboardX import SummaryWriter
 from core_scripts.startup_config import set_random_seed
 from tqdm import tqdm
@@ -118,9 +121,8 @@ def evaluate_accuracy(dev_loader, model, device, criterion):
             val_loss += (batch_loss.item() * batch_size)
             
             # Collect scores and labels for EER calculation
-            # Convert log probabilities to probabilities and get spoof scores
-            batch_probs = torch.exp(batch_out)  # Convert from log probabilities
-            batch_scores = batch_probs[:, 1].cpu().numpy()  # Spoof scores (class 1)
+            batch_probs = torch.exp(batch_out)
+            batch_scores = batch_probs[:, 1].cpu().numpy()
             batch_labels = batch_y.cpu().numpy()
             
             # Filter out invalid scores
@@ -144,11 +146,11 @@ def evaluate_accuracy(dev_loader, model, device, criterion):
 def produce_evaluation_file(dataset, model, device, save_path):
     data_loader = DataLoader(
         dataset, 
-        batch_size=20,  # Increase from default (probably 1)
+        batch_size=20,
         shuffle=False, 
         drop_last=False, 
-        pin_memory=True,  # Faster GPU transfer
-        num_workers=6     # Parallel data loading
+        pin_memory=True,
+        num_workers=6
     )
     model.eval()
     
@@ -161,7 +163,6 @@ def produce_evaluation_file(dataset, model, device, save_path):
         
         with torch.no_grad():
             batch_out = model(batch_x)
-            # Convert log probabilities to probabilities and get spoof scores
             batch_probs = torch.exp(batch_out)
             batch_score = batch_probs[:, 1].data.cpu().numpy().ravel()
         
@@ -204,7 +205,7 @@ def train_epoch(train_loader, model, lr, optim, device, criterion):
         
         running_loss += (batch_loss.item() * batch_size)
         
-        # Collect scores for training EER (computed with no_grad for efficiency)
+        # Collect scores for training EER
         with torch.no_grad():
             batch_probs = torch.exp(batch_out.detach())
             batch_scores = batch_probs[:, 1].cpu().numpy()
@@ -231,11 +232,13 @@ def train_epoch(train_loader, model, lr, optim, device, criterion):
     return running_loss, train_eer
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='ASVspoof2021 Pyramid Hierarchical Attention System')
+    parser = argparse.ArgumentParser(description='ASVspoof2021 Hierarchical Attention Models')
     
     # Dataset
-    parser.add_argument('--database_path', type=str, default='/root/autodl-tmp/CLAD/Datasets/LA/', help='Change this to user\'s full directory address of LA database (ASVspoof2019- for training & development (used as validation), ASVspoof2021 DF for evaluation scores). We assume that all three ASVspoof 2019 LA train, LA dev and ASVspoof2021 DF eval data folders are in the same database_path directory.')
-    parser.add_argument('--protocols_path', type=str, default='/root/autodl-tmp/CLAD/Datasets/LA/', help='Change with path to user\'s DF database protocols directory address')
+    parser.add_argument('--database_path', type=str, default='/root/autodl-tmp/CLAD/Datasets/LA/', 
+                        help='Database path')
+    parser.add_argument('--protocols_path', type=str, default='/root/autodl-tmp/CLAD/Datasets/LA/', 
+                        help='Protocols path')
     
     # Hyperparameters
     parser.add_argument('--batch_size', type=int, default=14)
@@ -244,139 +247,132 @@ if __name__ == '__main__':
     parser.add_argument('--weight_decay', type=float, default=0.0001)
     parser.add_argument('--loss', type=str, default='CCE')
     
-    # 修改2: 添加模型选择参数
-    parser.add_argument('--model_type', type=str, default='pyramid', 
-                        choices=['pyramid', 'fusion'],
-                        help='Model type: pyramid (original) or fusion (best)')
+    # 修改2: 模型选择参数
+    parser.add_argument('--model_type', type=str, default='hierarchical', 
+                        choices=['pyramid', 'fusion', 'hierarchical'],
+                        help='Model type: pyramid | fusion | hierarchical (new)')
     
-    # ========== Pyramid Hierarchical Attention Parameters ==========
-    # 旧的参数（保留兼容性）
-    parser.add_argument('--group_size', type=int, default=3,
-                        help='Group size for fixed grouping (used when use_pyramid=False)')
-    
-    # 新的Pyramid参数
+    # ========== Pyramid Model Parameters ==========
     parser.add_argument('--use_pyramid', action='store_true', default=False,
-                        help='Use pyramid hierarchical attention (default: False, use fixed grouping)')
+                        help='Use pyramid hierarchical attention')
     parser.add_argument('--base_dim', type=int, default=256,
-                        help='Base dimension for pyramid (default: 256)')
+                        help='Base dimension for pyramid')
     parser.add_argument('--merge_ratio', type=int, default=3,
-                        help='Merge ratio for pyramid: how many layers merge to 1 group (default: 3)')
+                        help='Merge ratio for pyramid')
     parser.add_argument('--num_stages', type=int, default=3,
-                        help='Number of pyramid stages (default: 3)')
+                        help='Number of pyramid stages')
+    parser.add_argument('--group_size', type=int, default=3,
+                        help='Group size for fixed grouping')
     
-    # 修改3: 添加 Fusion Model 参数
+    # ========== Fusion Model Parameters ==========
     parser.add_argument('--low_dim', type=int, default=256,
-                        help='Low dimension for fusion model (default: 256)')
+                        help='Low dimension for fusion model')
     parser.add_argument('--num_scales', type=int, default=3,
-                        help='Number of temporal scales for fusion model (default: 3)')
+                        help='Number of temporal scales for fusion model')
     
-    # model
+    # ========== Hierarchical Layer Model Parameters ==========
+    parser.add_argument('--embed_dim', type=int, default=256,
+                        help='Embedding dimension for hierarchical model')
+    parser.add_argument('--num_heads_expand', type=int, default=4,
+                        help='Number of heads for multi-head expansion')
+    parser.add_argument('--ssl_path', type=str, 
+                        default='/root/autodl-tmp/SLSforASVspoof-2021-DF/xlsr2_300m.pt',
+                        help='Path to XLS-R SSL model')
+    
+    # Model
     parser.add_argument('--seed', type=int, default=1234,
-                        help='random seed (default: 1234)')
-    
-    parser.add_argument('--model_path', type=str,
-                        default=None, help='Model checkpoint')
+                        help='Random seed')
+    parser.add_argument('--model_path', type=str, default=None, 
+                        help='Model checkpoint')
     parser.add_argument('--comment', type=str, default=None,
-                        help='Comment to describe the saved model and experiment')
+                        help='Comment for experiment')
     
     # Auxiliary arguments
-    parser.add_argument('--track', type=str, default='DF',choices=['LA', 'In-the-Wild','DF'], help='LA/PA/DF')
+    parser.add_argument('--track', type=str, default='DF',
+                        choices=['LA', 'In-the-Wild', 'DF'], 
+                        help='Track selection')
     parser.add_argument('--eval_output', type=str, default=None,
-                        help='Path to save the evaluation result')
+                        help='Path to save evaluation result')
     parser.add_argument('--eval', action='store_true', default=False,
-                        help='eval mode')
-    parser.add_argument('--is_eval', action='store_true', default=False,help='eval database')
+                        help='Evaluation mode')
+    parser.add_argument('--is_eval', action='store_true', default=False,
+                        help='Eval database')
     parser.add_argument('--eval_part', type=int, default=0)
     
-    # backend options
-    parser.add_argument('--cudnn-deterministic-toggle', action='store_false', \
+    # Backend options
+    parser.add_argument('--cudnn-deterministic-toggle', action='store_false', 
                         default=True, 
-                        help='use cudnn-deterministic? (default true)')    
-    
-    parser.add_argument('--cudnn-benchmark-toggle', action='store_true', \
+                        help='Use cudnn-deterministic')
+    parser.add_argument('--cudnn-benchmark-toggle', action='store_true', 
                         default=False, 
-                        help='use cudnn-benchmark? (default false)') 
+                        help='Use cudnn-benchmark') 
 
     # Rawboost data augmentation parameters
     parser.add_argument('--algo', type=int, default=3, 
-                    help='Rawboost algos discriptions. 0: No augmentation 1: LnL_convolutive_noise, 2: ISD_additive_noise, 3: SSI_additive_noise, 4: series algo (1+2+3), \
-                          5: series algo (1+2), 6: series algo (1+3), 7: series algo(2+3), 8: parallel algo(1,2) .default=0]')
-
-    # LnL_convolutive_noise parameters 
-    parser.add_argument('--nBands', type=int, default=5, 
-                    help='number of notch filters.The higher the number of bands, the more aggresive the distortions is.[default=5]')
-    parser.add_argument('--minF', type=int, default=20, 
-                    help='minimum centre frequency [Hz] of notch filter.[default=20] ')
-    parser.add_argument('--maxF', type=int, default=8000, 
-                    help='maximum centre frequency [Hz] (<sr/2)  of notch filter.[default=8000]')
-    parser.add_argument('--minBW', type=int, default=100, 
-                    help='minimum width [Hz] of filter.[default=100] ')
-    parser.add_argument('--maxBW', type=int, default=1000, 
-                    help='maximum width [Hz] of filter.[default=1000] ')
-    parser.add_argument('--minCoeff', type=int, default=10, 
-                    help='minimum filter coefficients. More the filter coefficients more ideal the filter slope.[default=10]')
-    parser.add_argument('--maxCoeff', type=int, default=100, 
-                    help='maximum filter coefficients. More the filter coefficients more ideal the filter slope.[default=100]')
-    parser.add_argument('--minG', type=int, default=0, 
-                    help='minimum gain factor of linear component.[default=0]')
-    parser.add_argument('--maxG', type=int, default=0, 
-                    help='maximum gain factor of linear component.[default=0]')
-    parser.add_argument('--minBiasLinNonLin', type=int, default=5, 
-                    help=' minimum gain difference between linear and non-linear components.[default=5]')
-    parser.add_argument('--maxBiasLinNonLin', type=int, default=20, 
-                    help=' maximum gain difference between linear and non-linear components.[default=20]')
-    parser.add_argument('--N_f', type=int, default=5, 
-                    help='order of the (non-)linearity where N_f=1 refers only to linear components.[default=5]')
-
-    # ISD_additive_noise parameters
-    parser.add_argument('--P', type=int, default=10, 
-                    help='Maximum number of uniformly distributed samples in [%].[defaul=10]')
-    parser.add_argument('--g_sd', type=int, default=2, 
-                    help='gain parameters > 0. [default=2]')
-
-    # SSI_additive_noise parameters
-    parser.add_argument('--SNRmin', type=int, default=10, 
-                    help='Minimum SNR value for coloured additive noise.[defaul=10]')
-    parser.add_argument('--SNRmax', type=int, default=40, 
-                    help='Maximum SNR value for coloured additive noise.[defaul=40]')
+                        help='Rawboost algorithm')
+    parser.add_argument('--nBands', type=int, default=5)
+    parser.add_argument('--minF', type=int, default=20)
+    parser.add_argument('--maxF', type=int, default=8000)
+    parser.add_argument('--minBW', type=int, default=100)
+    parser.add_argument('--maxBW', type=int, default=1000)
+    parser.add_argument('--minCoeff', type=int, default=10)
+    parser.add_argument('--maxCoeff', type=int, default=100)
+    parser.add_argument('--minG', type=int, default=0)
+    parser.add_argument('--maxG', type=int, default=0)
+    parser.add_argument('--minBiasLinNonLin', type=int, default=5)
+    parser.add_argument('--maxBiasLinNonLin', type=int, default=20)
+    parser.add_argument('--N_f', type=int, default=5)
+    parser.add_argument('--P', type=int, default=10)
+    parser.add_argument('--g_sd', type=int, default=2)
+    parser.add_argument('--SNRmin', type=int, default=10)
+    parser.add_argument('--SNRmax', type=int, default=40)
 
     if not os.path.exists('models'):
         os.mkdir('models')
     args = parser.parse_args()
  
-    #make experiment reproducible
+    # Make experiment reproducible
     set_random_seed(args.seed, args)
     
     track = args.track
 
-    # 修改4: 根据模型类型生成不同的模型标签
+    # 修改3: 根据模型类型生成不同的模型标签
     if args.model_type == 'fusion':
-        model_tag = 'model_fusion_{}_{}_{}_{}_{}_scales{}'.format(
+        model_tag = 'fusion_{}_{}_{}_{}_{}_scales{}'.format(
             track, args.loss, args.num_epochs, args.batch_size, args.lr, args.num_scales)
-    else:
-        model_tag = 'model_{}hierarchical_{}_{}_{}_{}_{}'.format(
-            'pyramid_' if args.use_pyramid else '',
+    elif args.model_type == 'hierarchical':
+        model_tag = 'hierarchical_{}_{}_{}_{}_{}_embed{}_heads{}'.format(
+            track, args.loss, args.num_epochs, args.batch_size, args.lr,
+            args.embed_dim, args.num_heads_expand)
+    else:  # pyramid
+        model_tag = 'pyramid_{}_{}_{}_{}_{}_{}'.format(
+            'hier' if args.use_pyramid else 'fixed',
             track, args.loss, args.num_epochs, args.batch_size, args.lr)
     
     if args.comment:
         model_tag = model_tag + '_{}'.format(args.comment)
     model_save_path = os.path.join('models', model_tag)
 
-    #set model save directory
+    # Set model save directory
     if not os.path.exists(model_save_path):
         os.mkdir(model_save_path)
     
     # Initialize CSV log
     init_csv_log(os.path.join(model_save_path, 'training_log.csv'))
     
-    # 修改5: 打印不同模型的配置
-    print('=' * 50)
+    # 修改4: 打印配置
+    print('=' * 60)
     print('Configuration:')
     print(f'  Model Type: {args.model_type}')
+    
     if args.model_type == 'fusion':
         print(f'  Low Dim: {args.low_dim}')
         print(f'  Num Scales: {args.num_scales}')
-    else:
+    elif args.model_type == 'hierarchical':
+        print(f'  Embed Dim: {args.embed_dim}')
+        print(f'  Num Heads (Expansion): {args.num_heads_expand}')
+        print(f'  SSL Path: {args.ssl_path}')
+    else:  # pyramid
         print(f'  Use Pyramid: {args.use_pyramid}')
         if args.use_pyramid:
             print(f'  Base Dim: {args.base_dim}')
@@ -384,69 +380,87 @@ if __name__ == '__main__':
             print(f'  Num Stages: {args.num_stages}')
         else:
             print(f'  Group Size: {args.group_size}')
-    print('=' * 50)
     
-    #GPU device
+    print('=' * 60)
+    
+    # GPU device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'                  
     print('Device: {}'.format(device))
     
-    # 修改6: 根据参数选择模型
+    # 修改5: 根据参数选择模型
     if args.model_type == 'fusion':
         model = FusionBestModel(args, device)
-        print('Using Fusion Best Model')
-    else:
+        print('✅ Using Fusion Best Model')
+    elif args.model_type == 'hierarchical':
+        model = HierarchicalLayerModel(args, device)
+        print('✅ Using Hierarchical Layer Attention Model')
+    else:  # pyramid
         model = PyramidModel(args, device)
-        print('Using Pyramid Model')
+        print('✅ Using Pyramid Model')
     
     nb_params = sum([param.view(-1).size()[0] for param in model.parameters()])
+    print('📊 Total parameters: {:,}'.format(nb_params))
 
     model = nn.DataParallel(model).to(device)
-    print('nb_params:', nb_params)
 
     # 设置损失函数
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.NLLLoss(weight=weight)
 
-    #set Adam optimizer
+    # Set Adam optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     
     if args.model_path:
         model.load_state_dict(torch.load(args.model_path, map_location=device))
-        print('Model loaded : {}'.format(args.model_path))
+        print('Model loaded: {}'.format(args.model_path))
 
-    # evaluation mode on the In-the-Wild dataset.
+    # Evaluation mode on the In-the-Wild dataset
     if args.track == 'In-the-Wild':
         file_eval = genSpoof_list(dir_meta=os.path.join(args.protocols_path), is_train=False, is_eval=True)
-        print('no. of eval trials', len(file_eval))
+        print('No. of eval trials:', len(file_eval))
         eval_set = Dataset_in_the_wild_eval(list_IDs=file_eval, base_dir=os.path.join(args.database_path))
         produce_evaluation_file(eval_set, model, device, args.eval_output)
         sys.exit(0)
 
-    # evaluation mode on the DF or LA dataset.
+    # Evaluation mode on the DF or LA dataset
     if args.eval:
         file_eval = genSpoof_list(dir_meta=os.path.join(args.protocols_path), is_train=False, is_eval=True)
-        print('no. of eval trials', len(file_eval))
+        print('No. of eval trials:', len(file_eval))
         eval_set = Dataset_ASVspoof2021_eval(list_IDs=file_eval, base_dir=os.path.join(args.database_path))
         produce_evaluation_file(eval_set, model, device, args.eval_output)
         sys.exit(0)
    
-    # define train dataloader
-    d_label_trn, file_train = genSpoof_list(dir_meta=os.path.join(args.protocols_path+'ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt'), is_train=True, is_eval=False)
+    # Define train dataloader
+    d_label_trn, file_train = genSpoof_list(
+        dir_meta=os.path.join(args.protocols_path + 'ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt'), 
+        is_train=True, is_eval=False
+    )
     
-    print('no. of training trials', len(file_train))
+    print('No. of training trials:', len(file_train))
     
-    train_set = Dataset_ASVspoof2019_train(args, list_IDs=file_train, labels=d_label_trn, base_dir=os.path.join(args.database_path+'ASVspoof2019_LA_train/'), algo=args.algo)
+    train_set = Dataset_ASVspoof2019_train(
+        args, list_IDs=file_train, labels=d_label_trn, 
+        base_dir=os.path.join(args.database_path + 'ASVspoof2019_LA_train/'), 
+        algo=args.algo
+    )
     
     train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=8, shuffle=True, drop_last=True)
     
     del train_set, d_label_trn
     
-    # define dev (validation) dataloader
-    d_label_dev, file_dev = genSpoof_list(dir_meta=os.path.join(args.protocols_path+'ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.dev.trl.txt'), is_train=False, is_eval=False)
+    # Define dev (validation) dataloader
+    d_label_dev, file_dev = genSpoof_list(
+        dir_meta=os.path.join(args.protocols_path + 'ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.dev.trl.txt'), 
+        is_train=False, is_eval=False
+    )
 
-    print('no. of validation trials', len(file_dev))
+    print('No. of validation trials:', len(file_dev))
 
-    dev_set = Dataset_ASVspoof2019_train(args, list_IDs=file_dev, labels=d_label_dev, base_dir=os.path.join(args.database_path+'ASVspoof2019_LA_dev/'), algo=args.algo)
+    dev_set = Dataset_ASVspoof2019_train(
+        args, list_IDs=file_dev, labels=d_label_dev, 
+        base_dir=os.path.join(args.database_path + 'ASVspoof2019_LA_dev/'), 
+        algo=args.algo
+    )
 
     dev_loader = DataLoader(dev_set, batch_size=args.batch_size, num_workers=8, shuffle=False)
 
@@ -460,7 +474,9 @@ if __name__ == '__main__':
     patience_counter = 0
 
     for epoch in range(num_epochs):
-        print('\nEpoch: {}'.format(epoch))
+        print('\n' + '=' * 60)
+        print(f'Epoch: {epoch}/{num_epochs}')
+        print('=' * 60)
         
         # Training
         train_loss, train_eer = train_epoch(
@@ -472,8 +488,8 @@ if __name__ == '__main__':
             dev_loader, model, device, criterion
         )
         
-        print(f'Train Loss: {train_loss:.6f}, EER: {train_eer:.2f}%')
-        print(f'Val Loss: {val_loss:.6f}, Acc: {val_acc:.2f}%, EER: {val_eer:.2f}%')
+        print(f'📈 Train Loss: {train_loss:.6f}, EER: {train_eer:.2f}%')
+        print(f'📊 Val Loss: {val_loss:.6f}, Acc: {val_acc:.2f}%, EER: {val_eer:.2f}%')
         
         # Log to CSV
         log_data = {
@@ -502,7 +518,7 @@ if __name__ == '__main__':
             
         torch.save(model.state_dict(), os.path.join(model_save_path, model_filename))
         
-        # Save best model based on EER (lower is better)
+        # Save best model based on EER
         if val_eer < best_val_eer:
             best_val_eer = val_eer
             patience_counter = 0
@@ -517,8 +533,11 @@ if __name__ == '__main__':
 
         # Optional: Early stopping
         # if patience_counter >= 10:
-        #     print(f"Early stopping triggered at epoch {epoch}, best EER: {best_val_eer:.2f}%")
+        #     print(f"Early stopping at epoch {epoch}, best EER: {best_val_eer:.2f}%")
         #     break
 
     writer.close()
-    print('Training completed!')
+    print('\n' + '=' * 60)
+    print('✅ Training completed!')
+    print(f'🏆 Best validation EER: {best_val_eer:.2f}%')
+    print('=' * 60)
