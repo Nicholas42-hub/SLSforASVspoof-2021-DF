@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hierarchical Attention Architecture Diagram</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 40px;
+            margin: 0;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            padding: 40px;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 40px;
+        }
+        .architecture {
+            display: flex;
+            justify-content: space-around;
+            align-items: stretch;
+            gap: 30px;
+            margin-top: 30px;
+        }
+        .column {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .box {
+            padding: 15px 20px;
+            border-radius: 8px;
+            text-align: center;
+            font-weight: bold;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            transition: transform 0.3s;
+            position: relative;
+        }
+        .box:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+        }
+        .input { background: linear-gradient(135deg, #e0e0e0, #f5f5f5); border: 2px solid #999; }
+        .xlsr { background: linear-gradient(135deg, #e1bee7, #ce93d8); border: 2px solid #8e24aa; }
+        .layer { background: linear-gradient(135deg, #bbdefb, #90caf9); border: 2px solid #1976d2; }
+        .temporal { background: linear-gradient(135deg, #b2ebf2, #80deea); border: 2px solid #0097a7; }
+        .intra { background: linear-gradient(135deg, #c8e6c9, #a5d6a7); border: 2px solid #388e3c; }
+        .refine { background: linear-gradient(135deg, #ffe0b2, #ffcc80); border: 2px solid #f57c00; }
+        .inter { background: linear-gradient(135deg, #f8bbd0, #f48fb1); border: 2px solid #c2185b; }
+        .utt { background: linear-gradient(135deg, #b2dfdb, #80cbc4); border: 2px solid #00796b; }
+        .head { background: linear-gradient(135deg, #e1bee7, #ce93d8); border: 2px solid #7b1fa2; }
+        .loss { background: linear-gradient(135deg, #ffcdd2, #ef9a9a); border: 2px solid #c62828; }
+        .label {
+            font-size: 12px;
+            color: #666;
+            font-weight: normal;
+            margin-top: 5px;
+        }
+        .stage-label {
+            text-align: center;
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #f0f0f0;
+            border-radius: 8px;
+        }
+        .semantic {
+            position: absolute;
+            left: -100px;
+            font-size: 11px;
+            font-style: italic;
+            color: #8e24aa;
+            width: 80px;
+            text-align: right;
+        }
+        .arrow {
+            width: 0;
+            height: 0;
+            border-left: 10px solid transparent;
+            border-right: 10px solid transparent;
+            border-top: 15px solid #666;
+            margin: 5px auto;
+        }
+        .info-panel {
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 40px;
+            border-left: 5px solid #667eea;
+        }
+        .info-panel h3 {
+            margin-top: 0;
+            color: #667eea;
+        }
+        .info-panel ul {
+            line-height: 1.8;
+        }
+        .code {
+            font-family: 'Courier New', monospace;
+            background: #e8e8e8;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎯 Hierarchical Attention with Contrastive Learning</h1>
+        <p class="subtitle">Architecture for Robust Audio Deepfake Detection</p>
+        
+        <div class="architecture">
+            <!-- Column 1: Input & XLS-R -->
+            <div class="column">
+                <div class="stage-label">SSL Features</div>
+                <div class="box input">Audio Input</div>
+                <div class="arrow"></div>
+                <div class="box xlsr">
+                    <strong>XLS-R Encoder</strong><br>
+                    <span class="label">(24 Transformer Layers)<br>ℝ<sup>T×1024</sup></span>
+                </div>
+                <div class="arrow"></div>
+                <div class="box layer" style="position: relative;">
+                    <span class="semantic">Acoustic</span>
+                    Layers 1-3
+                </div>
+                <div class="box layer" style="position: relative;">
+                    <span class="semantic">Phonetic</span>
+                    Layers 4-6
+                </div>
+                <div style="text-align: center; font-size: 20px; color: #999;">⋮</div>
+                <div class="box layer" style="position: relative;">
+                    <span class="semantic">Linguistic</span>
+                    Layers 22-24
+                </div>
+            </div>
+            
+            <!-- Column 2: Stage 1 - Temporal Attention -->
+            <div class="column">
+                <div class="stage-label">Stage 1: Temporal (α<sub>t</sub>)</div>
+                <div class="box temporal">
+                    <strong>Temporal Attention</strong><br>
+                    <span class="label">(with bias)<br>ℝ<sup>1024</sup></span>
+                </div>
+                <div style="margin: 40px 0;"></div>
+                <div class="box temporal">
+                    <strong>Temporal Attention</strong><br>
+                    <span class="label">(with bias)</span>
+                </div>
+                <div style="margin: 40px 0;"></div>
+                <div class="box temporal">
+                    <strong>Temporal Attention</strong><br>
+                    <span class="label">(with bias)</span>
+                </div>
+            </div>
+            
+            <!-- Column 3: Stage 2 - Intra-Group -->
+            <div class="column">
+                <div class="stage-label">Stage 2: Intra-Group (β<sub>g</sub>)</div>
+                <div style="display: flex; gap: 10px;">
+                    <div class="box intra">
+                        <strong>Intra-Group</strong><br>
+                        <span class="label">Attention</span>
+                    </div>
+                    <div class="box refine">
+                        <strong>Residual</strong><br>
+                        <span class="label">Refine</span>
+                    </div>
+                </div>
+                <div style="margin: 20px 0;"></div>
+                <div style="display: flex; gap: 10px;">
+                    <div class="box intra">
+                        <strong>Intra-Group</strong><br>
+                        <span class="label">Attention</span>
+                    </div>
+                    <div class="box refine">
+                        <strong>Residual</strong><br>
+                        <span class="label">Refine</span>
+                    </div>
+                </div>
+                <div style="margin: 20px 0;"></div>
+                <div style="display: flex; gap: 10px;">
+                    <div class="box intra">
+                        <strong>Intra-Group</strong><br>
+                        <span class="label">Attention</span>
+                    </div>
+                    <div class="box refine">
+                        <strong>Residual</strong><br>
+                        <span class="label">Refine</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Column 4: Stage 3 & Output -->
+            <div class="column">
+                <div class="stage-label">Stage 3: Inter-Group (γ)</div>
+                <div class="box inter" style="min-height: 200px; display: flex; flex-direction: column; justify-content: center;">
+                    <strong>Inter-Group Attention</strong><br>
+                    <span class="label">(Aggregates 8 Groups)</span>
+                </div>
+                <div class="arrow"></div>
+                <div class="box utt">
+                    <strong>Utterance Embedding</strong><br>
+                    <span class="label">+ Refinement<br>ℝ<sup>1024</sup></span>
+                </div>
+            </div>
+            
+            <!-- Column 5: Dual Heads -->
+            <div class="column" style="justify-content: center;">
+                <div class="stage-label">Dual Objectives</div>
+                <div class="box head">
+                    <strong>Classifier Head</strong><br>
+                    <span class="label">(Linear + Dropout)<br>ℝ<sup>2</sup></span>
+                </div>
+                <div class="arrow"></div>
+                <div class="box loss">
+                    ℒ<sub>CE</sub> (Cross-Entropy)
+                </div>
+                <div style="margin: 20px 0;"></div>
+                <div class="box head">
+                    <strong>Projection Head</strong><br>
+                    <span class="label">(1024 → 256)<br>ℝ<sup>256</sup></span>
+                </div>
+                <div class="arrow"></div>
+                <div class="box loss">
+                    ℒ<sub>con</sub> + ℒ<sub>supcon</sub>
+                </div>
+            </div>
+        </div>
+        
+        <div class="info-panel">
+            <h3>📋 Architecture Details</h3>
+            <ul>
+                <li><strong>SSL Features:</strong> XLS-R extracts features from all 24 transformer layers</li>
+                <li><strong>Stage 1 (Temporal):</strong> Attention over time steps with temporal bias (emphasizes audio edges)</li>
+                <li><strong>Stage 2 (Intra-Group):</strong> 8 groups × 3 layers with attention within each group + residual refinement</li>
+                <li><strong>Stage 3 (Inter-Group):</strong> Hierarchical aggregation across 8 groups</li>
+                <li><strong>Dual Training:</strong> Joint optimization with classification (CE) and contrastive learning (margin-based + supervised contrastive)</li>
+                <li><strong>Semantic Levels:</strong> Acoustic (layers 1-8), Phonetic (layers 9-16), Linguistic (layers 17-24)</li>
+            </ul>
+            
+            <h3>🎨 View the LaTeX Version</h3>
+            <p>For publication-quality diagram, compile <span class="code">hiercon_architecture_standalone.tex</span> using:</p>
+            <ol>
+                <li><strong>Overleaf:</strong> Upload to <a href="https://www.overleaf.com" target="_blank">overleaf.com</a> (recommended)</li>
+                <li><strong>Local:</strong> Install MacTeX and run: <span class="code">pdflatex hiercon_architecture_standalone.tex</span></li>
+            </ol>
+        </div>
+    </div>
+</body>
+</html>
