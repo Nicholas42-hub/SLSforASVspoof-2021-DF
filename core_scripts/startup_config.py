@@ -43,8 +43,8 @@ def set_random_seed(random_seed, args=None):
         cudnn_deterministic = True
         cudnn_benchmark = False
     else:
-        cudnn_deterministic = args.cudnn_deterministic_toggle
-        cudnn_benchmark = args.cudnn_benchmark_toggle
+        cudnn_deterministic = getattr(args, 'cudnn_deterministic_toggle', True)
+        cudnn_benchmark = getattr(args, 'cudnn_benchmark_toggle', False)
     
         if not cudnn_deterministic:
             print("cudnn_deterministic set to False")

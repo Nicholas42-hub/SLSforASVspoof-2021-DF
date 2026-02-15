@@ -1,0 +1,64 @@
+=================================================================
+CPC Model Performance Analysis - 2021 LA Evaluation
+=================================================================
+
+RESULTS COMPARISON:
+------------------
+Model              EER      min-tDCF   Bonafide Mean   Spoof Mean   Separation
+Window TopK (w=8)  2.94%    0.452      0.9766         0.0491       0.9275
+CPC (w=8)          9.04%    0.452      0.8121         0.0054       0.8067
+
+Performance: CPC is 3x WORSE than Window TopK (9.04% vs 2.94%)
+
+ROOT CAUSES:
+-----------
+1. CPC Loss Weight Too High (0.5)
+   - CPC loss (1.5-2.6) dominates classification loss (0.001)
+   - Model prioritizes temporal structure over discrimination
+   
+2. Over-fitting to Validation Set
+   - Val EER: 0.00%
+   - Test EER: 9.04%
+   - Gap: 9.04% indicates severe overfitting
+
+3. Classification Confidence Degraded
+   - Bonafide scores dropped from 0.98 to 0.81
+   - Less confident predictions despite good temporal structure
+
+TRAINING LOSS BREAKDOWN (Epoch 29):
+-----------------------------------
+Classification: 0.0012 (weight: 1.0)
+SAE Recon:      0.0093 (weight: 0.1) → effective: 0.00093
+CPC:            1.5794 (weight: 0.5) → effective: 0.7897
+
+CPC loss contributes 98.7% of total loss!
+
+RECOMMENDATIONS:
+---------------
+1. Reduce CPC Weight: 0.5 → 0.05 or 0.1
+   - Balance classification and temporal structure learning
+   
+2. Add Regularization:
+   - Dropout in CPC modules
+   - Weight decay
+   - Early stopping based on test set
+
+3. Multi-task Loss Balancing:
+   - Dynamic loss weighting
+   - GradNorm or uncertainty weighting
+
+4. Architecture Changes:
+   - Separate CPC branch (don't affect classifier)
+   - Only use CPC during training, remove during inference
+
+HYPOTHESIS:
+----------
+CPC improves temporal stability (85.4% Jaccard, -17.8% boundary 
+discontinuity) but HARMS discrimination capability by forcing
+representations to be predictable rather than discriminative.
+
+NEXT STEPS:
+----------
+1. Retrain with cpc_weight=0.05
+2. Try CPC as auxiliary task (detached from classifier)
+3. Consider CPC only for SAE encoder, not classifier

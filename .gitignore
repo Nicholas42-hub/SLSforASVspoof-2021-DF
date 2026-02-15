@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+SLS_venv/
+venv/
+ENV/
+env/
+
+# Data and Models
+models/
+*.pt
+*.pth
+*.ckpt
+LibriSpeech/
+Datasets/
+fairseq-*/
+xlsr2_300m.pt
+dev-clean.tar.gz
+
+# Analysis Results and Logs
+analysis_results*/
+decision_analysis*/
+temporal_comparison*/
+temporal_stability_analysis/
+window_limitations_analysis*/
+global_cue_consistency_*/
+results_for_caren_*/
+logs/
+*.log
+slurm-*.out
+scores/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

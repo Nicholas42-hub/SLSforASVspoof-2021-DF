@@ -1,0 +1,29 @@
+{
+  "hypothesis": "Discriminative features should be more transient (short-lived) than non-discriminative features",
+  "num_samples_analyzed": 0,
+  "window_size": 8,
+  "top_k_features_count": 50,
+  "discriminative_features": {
+    "description": "Top-k features that drive classification decisions",
+    "statistics": {}
+  },
+  "non_discriminative_features": {
+    "description": "Other features with lower attribution scores",
+    "statistics": {}
+  },
+  "comparison": {
+    "t_statistic": null,
+    "p_value": null,
+    "cohens_d": null,
+    "interpretation": {
+      "lifetime_difference": 0,
+      "transient_ratio_difference": 0,
+      "conclusion": "INCONCLUSIVE: No significant difference in temporal characteristics between discriminative and non-discriminative features. p-value: N/A"
+    }
+  },
+  "implication_for_overlapping_windows": {
+    "if_discriminative_more_transient": "Overlapping windows smooth transient features, destroying discriminative power",
+    "if_discriminative_more_persistent": "Overlapping windows should help, but experiments show degradation - other factors involved"
+  },
+  "detailed_feature_stats": {}
+}

@@ -109,7 +109,7 @@ class Dataset_ASVspoof2021_eval(Dataset):
 	def __getitem__(self, index):
             
             utt_id = self.list_IDs[index]
-            X, fs = librosa.load(self.base_dir+'flac/'+utt_id+'.flac', sr=16000)
+            X, fs = librosa.load(self.base_dir+'/flac/'+utt_id+'.flac', sr=16000)
             X_pad = pad(X,self.cut)
             x_inp = Tensor(X_pad)
             return x_inp,utt_id

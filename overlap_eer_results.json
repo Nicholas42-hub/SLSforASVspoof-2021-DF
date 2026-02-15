@@ -1,0 +1,8 @@
+{
+  "eer": 7.21747257015074,
+  "num_samples": 150261,
+  "num_bonafide": 15213,
+  "num_spoof": 135048,
+  "bonafide_score_mean": 0.9085688311372603,
+  "spoof_score_mean": 0.04832099218952512
+}

@@ -1,0 +1,8 @@
+{
+  "num_samples": 5008,
+  "temporal_stability": {
+    "interior": 0.9253740507941911,
+    "boundary": 0.8588766529799079,
+    "discontinuity_pct": 7.18980244256864
+  }
+}
